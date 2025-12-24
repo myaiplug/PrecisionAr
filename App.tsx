@@ -25,7 +25,7 @@ const App: React.FC = () => {
   const [isPaywallOpen, setIsPaywallOpen] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
-  // Fix: Initialize pendingPrice with all required properties to match PaywallProps type expected by Paywall component
+  // Fix: Initialize pendingPrice with all required properties to match PaywallProps type including 'breakdown'
   const [pendingPrice, setPendingPrice] = useState({ 
     price: 0, 
     complexity: "Standard", 
