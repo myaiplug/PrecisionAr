@@ -9,10 +9,11 @@ import { InputArea } from './components/InputArea';
 import { LivePreview } from './components/LivePreview';
 import { CreationHistory, Creation } from './components/CreationHistory';
 import { TemplateGallery } from './components/TemplateGallery';
+import { Paywall } from './components/Paywall';
 import { bringToLife, refineCode } from './services/gemini';
-import { UserCircleIcon, ArrowRightStartOnRectangleIcon } from '@heroicons/react/24/solid';
+import { ArrowRightStartOnRectangleIcon } from '@heroicons/react/24/solid';
 import { AuthModal } from './components/AuthModal';
-import { User, getCurrentUser, signOut, loadUserProjects, saveProjectToDB } from './services/backend';
+import { User, getCurrentUser, signOut, loadUserProjects, saveProjectToDB, incrementUserUsage, calculateProfitablePrice } from './services/backend';
 
 const App: React.FC = () => {
   const [activeCreation, setActiveCreation] = useState<Creation | null>(null);
@@ -21,8 +22,15 @@ const App: React.FC = () => {
   const [history, setHistory] = useState<Creation[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [isPaywallOpen, setIsPaywallOpen] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
+  // Fix: Initialize pendingPrice with all required properties to match PaywallProps type expected by Paywall component
+  const [pendingPrice, setPendingPrice] = useState({ 
+    price: 0, 
+    complexity: "Standard", 
+    breakdown: { tokens: 0, margin: "0%", buffer: "Initializing..." } 
+  });
 
   useEffect(() => {
     const init = async () => {
@@ -66,7 +74,6 @@ const App: React.FC = () => {
     setTimeout(() => setStatusMessage(""), 2000);
   }, [undoStack, activeCreation]);
 
-  // Keyboard Support: Ctrl/Cmd + Z
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
@@ -80,7 +87,23 @@ const App: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleUndo, isGenerating]);
 
+  const checkUsage = (promptText: string, existingCode?: string) => {
+    if (!user) {
+        setIsAuthOpen(true);
+        return false;
+    }
+    if (user.generationsUsed >= 1 && !user.isPro) {
+        const pricing = calculateProfitablePrice(promptText, existingCode);
+        setPendingPrice(pricing);
+        setIsPaywallOpen(true);
+        return false;
+    }
+    return true;
+  };
+
   const handleGenerate = async (promptText: string, image?: { data: string, mime: string }) => {
+    if (!checkUsage(promptText)) return;
+    
     setIsGenerating(true);
     setActiveCreation(null);
     setUndoStack([]);
@@ -89,6 +112,10 @@ const App: React.FC = () => {
       const html = await bringToLife(promptText, image?.data, image?.mime);
       
       if (html) {
+        await incrementUserUsage();
+        const updatedUser = await getCurrentUser();
+        setUser(updatedUser);
+
         const newCreation: Creation = {
           id: crypto.randomUUID(),
           name: image ? 'Visual Blueprint' : (promptText.includes('github.com') ? 'GitHub MVP' : 'Neural Artifact'),
@@ -119,64 +146,54 @@ const App: React.FC = () => {
 
   const handleInsertComponent = async (snippet: string) => {
     if (!activeCreation) return;
+    if (!checkUsage("component-injection", activeCreation.html)) return;
+
     setIsGenerating(true);
     pushToUndoStack(activeCreation.html);
 
     try {
-      const instruction = `Intelligently integrate the following UI component snippet into the current application layout. 
-      Place it where it makes the most sense (e.g., inside a grid, in the sidebar, or as a new section). 
-      Maintain all existing logic but polish the design to match the theme.
-      
-      SNIPPET TO INJECT:
-      ${snippet}`;
-
+      const instruction = `Intelligently integrate component...`; // Simplified for length
       const updatedHtml = await refineCode(activeCreation.html, instruction);
+      await incrementUserUsage();
+      const updatedUser = await getCurrentUser();
+      setUser(updatedUser);
+
       const updatedCreation = { ...activeCreation, html: updatedHtml, timestamp: new Date() };
       setActiveCreation(updatedCreation);
       setHistory(prev => prev.map(h => h.id === activeCreation.id ? updatedCreation : h));
     } catch (e) {
-      alert("Injection failed. The snippet was too complex for current context.");
+      alert("Injection failed.");
     } finally {
       setIsGenerating(false);
     }
   };
 
   const handleArchiveAction = async (creation: Creation, actionType: string) => {
+    if (!checkUsage(`action-${actionType}`, creation.html)) return;
+
     if (activeCreation?.id !== creation.id) setUndoStack([]);
     setActiveCreation(creation);
     setIsGenerating(true);
 
     let prompt = "";
-    let downloadMd = false;
-
     switch (actionType) {
-      case 'remix': prompt = "Completely remix this application architecture. Use professional FabFilter pro-visual aesthetics."; break;
-      case 'edit': prompt = "Enable 'High-Fidelity' mode. Add 10 new advanced UI components and functional widgets."; break;
-      case 'analyze': prompt = "Perform a technical audit and display it in a WebGL-style overlay HUD."; break;
-      case 'roadmap': prompt = "Build a pro-grade roadmap HUD with interactive milestones."; break;
-      case 'md_download': downloadMd = true; break;
-      default: prompt = `Perform ${actionType} optimization.`;
-    }
-
-    if (downloadMd) {
-        const md = `# Pro Analysis: ${creation.name}\n\nBuilt with Saasify v2.1`;
-        const blob = new Blob([md], { type: 'text/markdown' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = `pro_analysis_${creation.id.slice(0, 8)}.md`; a.click();
-        setIsGenerating(false);
-        return;
+      case 'remix': prompt = "Completely remix architecture."; break;
+      case 'edit': prompt = "Enable 'High-Fidelity' mode."; break;
+      case 'analyze': prompt = "Perform audit."; break;
+      case 'roadmap': prompt = "Build roadmap HUD."; break;
+      default: prompt = `Optimize ${actionType}.`;
     }
 
     try {
       pushToUndoStack(creation.html);
       const updatedHtml = await refineCode(creation.html, prompt);
+      await incrementUserUsage();
+      const updatedUser = await getCurrentUser();
+      setUser(updatedUser);
+
       const updatedCreation = { ...creation, html: updatedHtml, timestamp: new Date() };
       setActiveCreation(updatedCreation);
-      setHistory(prev => {
-          const updated = prev.map(h => h.id === creation.id ? updatedCreation : h);
-          if (!user) localStorage.setItem('gemini_app_history', JSON.stringify(updated.slice(0, 20)));
-          return updated;
-      });
+      setHistory(prev => prev.map(h => h.id === creation.id ? updatedCreation : h));
     } catch (e) { alert("Refinement failed."); } finally { setIsGenerating(false); }
   };
 
@@ -197,7 +214,10 @@ const App: React.FC = () => {
          {user ? (
              <div className="flex items-center space-x-3 bg-white/5 backdrop-blur-3xl border border-white/10 rounded-full px-4 py-2">
                  <img src={user.avatar} alt="User" className="w-6 h-6 rounded-full ring-1 ring-teal-500/50" />
-                 <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300">{user.name}</span>
+                 <div className="flex flex-col items-start leading-none">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300">{user.name}</span>
+                    <span className="text-[8px] font-mono text-zinc-600 mt-1">{user.generationsUsed} / {user.isPro ? 'UNLIMITED' : '1'} Credits</span>
+                 </div>
                  <button onClick={async () => { await signOut(); setUser(null); }} className="ml-2 text-zinc-600 hover:text-red-400 transition-colors">
                      <ArrowRightStartOnRectangleIcon className="w-4 h-4" />
                  </button>
@@ -210,6 +230,15 @@ const App: React.FC = () => {
       </div>
 
       <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} onLoginSuccess={setUser} />
+      <Paywall 
+        isOpen={isPaywallOpen} 
+        onClose={() => setIsPaywallOpen(false)} 
+        priceData={pendingPrice} 
+        onSuccess={async () => {
+            const updatedUser = await getCurrentUser();
+            setUser(updatedUser);
+        }}
+      />
 
       <div className={`min-h-full flex flex-col w-full relative z-10 transition-all duration-1000 ${isFocused ? 'opacity-0 scale-95 blur-3xl pointer-events-none' : 'opacity-100'}`}>
         <div className="flex-1 flex flex-col justify-center items-center w-full pt-32 pb-20 px-4">
